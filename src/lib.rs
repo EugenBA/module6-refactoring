@@ -1,35 +1,31 @@
 pub mod parse;
 
-use std::fmt::Debug;
 use parse::*;
+use std::fmt::Debug;
+use std::io::{BufReader, Error, Lines, Read};
 
 // подсказка: лучше использовать enum и match
 // исправлено
-pub enum ReadMode{
+pub enum ReadMode {
     /// Режим чтения из логов всего подряд
     All,
     /// Режим чтения из логов только ошибок
     Errors,
     /// Режим чтения из логов только операций, касающихся деген
-    Exchanges
+    Exchanges,
 }
 
 /// Для `Box<dyn много трейтов, помимо auto-трейтов>`, (`rustc E0225`)
 /// `only auto traits can be used as additional traits in a trait object`
 /// `consider creating a new trait with all of these as supertraits and using that trait here instead`
-pub trait MyReader: std::io::Read + std::fmt::Debug + 'static
-{}
-impl<T: std::io::Read + std::fmt::Debug + 'static> MyReader for T
-{}
 // подсказка: вместо trait-объекта можно дженерик
 // исправлено
 /// Итератор, на выходе которого - строки распарсенной структуры данных
 #[derive(Debug)]
-struct LogIterator <T: MyReader>{
-    lines: std::iter::Filter<std::io::Lines<std::io::BufReader<T>>,fn(&Result<String,std::io::Error>)->bool>,
-    //reader_rc: T
+struct LogIterator<T: Read + Debug + 'static> {
+    lines: std::iter::Filter<Lines<BufReader<T>>, fn(&Result<String, Error>) -> bool>,
 }
-impl<T: MyReader> LogIterator<T> {
+impl<T: Read + Debug + 'static> LogIterator<T> {
     fn new(r: T) -> Self {
         use std::io::BufRead;
         // подсказка: unsafe избыточен, да и весь rc - тоже
@@ -40,24 +36,25 @@ impl<T: MyReader> LogIterator<T> {
         // > порядке объявления в структуре - то есть сначала будет удалён
         // > мой RefMutWrapper, а уже потом и весь исходный reader_rc
         // исправлено
-        Self{
-            lines: std::io::BufReader::with_capacity(4096, r)
-                       .lines()
-                       .filter(
-                           |line_res|
-                           !line_res.as_ref().ok()
-                               .map(|line| line.trim().is_empty())
-                               .unwrap_or(false)
-                        ),
-          //  reader_rc: r,
+        Self {
+            lines: BufReader::with_capacity(4096, r)
+                .lines()
+                .filter(|line_res| {
+                    !line_res
+                        .as_ref()
+                        .ok()
+                        .map(|line| line.trim().is_empty())
+                        .unwrap_or(false)
+                }),
         }
     }
 }
-impl<T: MyReader> Iterator for LogIterator<T> {
+impl<T: Read + Debug + 'static> Iterator for LogIterator<T> {
     type Item = LogLine;
+
     fn next(&mut self) -> Option<Self::Item> {
         let line = self.lines.next()?.ok()?;
-        let (remaining, result) = LogLineParser::new().parse(line.trim()).ok()?;
+        let (remaining, result) = parse(line.trim()).ok()?;
         remaining.trim().is_empty().then_some(result)
     }
 }
@@ -65,52 +62,38 @@ impl<T: MyReader> Iterator for LogIterator<T> {
 // подсказка: RefCell вообще не нужен
 // исправлено
 /// Принимает поток байт, отдаёт отфильтрованные и распарсенные логи
-pub fn read_log<R: MyReader>(input: R, mode: ReadMode, request_ids: Vec<u32>) -> Vec<LogLine> {
-    let logs = LogIterator::new(input);
-    let mut collected = Vec::new();
+pub fn read_log<R: Read + Debug + 'static>(
+    input: R,
+    mode: ReadMode,
+    request_ids: Vec<u32>,
+) -> Vec<LogLine> {
     // подсказка: можно обойтись итераторами
-    // ToDo
-    for log in logs {
-        if request_ids.is_empty() || {
-            let mut request_id_found = false;
-            for request_id in &request_ids {
-                if *request_id == log.request_id {
-                    request_id_found = true;
-                    break;
-                }
-            }
-            request_id_found
-        }
-        && match mode {
-            ReadMode::All => { true },
-            ReadMode::Errors => {
-                matches!(
-                    &log.kind,
-                    LogKind::System(
-                        SystemLogKind::Error(_)) | LogKind::App(AppLogKind::Error(_)))
-            },
-            ReadMode::Exchanges => {
-                matches!(
-                & log.kind,
-                LogKind::App(AppLogKind::Journal(
-                AppLogJournalKind::BuyAsset(_)
-                | AppLogJournalKind::SellAsset(_)
-                | AppLogJournalKind::CreateUser{..
-            }
-            | AppLogJournalKind::RegisterAsset { .. }
-            | AppLogJournalKind::DepositCash(_)
-            | AppLogJournalKind::WithdrawCash(_)
-            ))
-            )
-            }
-        }
-        {
-            collected.push(log);
-        }
-    }
-    collected
+    LogIterator::new(input)
+        .filter(|log| {
+            let id_matches = request_ids.is_empty() || request_ids.contains(&log.request_id);
+            // подсказка: лучше match - исправлено
+            let mode_matches = match mode {
+                ReadMode::All => true,
+                ReadMode::Errors => matches!(
+                    log.kind,
+                    LogKind::System(SystemLogKind::Error(_)) | LogKind::App(AppLogKind::Error(_))
+                ),
+                ReadMode::Exchanges => matches!(
+                    log.kind,
+                    LogKind::App(AppLogKind::Journal(
+                        AppLogJournalKind::BuyAsset(_)
+                            | AppLogJournalKind::SellAsset(_)
+                            | AppLogJournalKind::CreateUser { .. }
+                            | AppLogJournalKind::RegisterAsset { .. }
+                            | AppLogJournalKind::DepositCash(_)
+                            | AppLogJournalKind::WithdrawCash(_)
+                    ))
+                ),
+            };
+            id_matches && mode_matches
+        })
+        .collect()
 }
-
 
 #[cfg(test)]
 mod test {
@@ -182,17 +165,18 @@ App::Trace GetResponse "Ok" requestid=10
 App::Journal BuyAsset UserBacket{"user_id":"Alice","backet":Backet{"asset_id":"milk","count":5,},} requestid=10
         "#;
 
-
     #[test]
     fn test_all() {
-        let refcell1= Box::new(SOURCE1.as_bytes());
+        let refcell1 = SOURCE1.as_bytes();
         assert_eq!(read_log(refcell1, ReadMode::All, vec![]).len(), 1);
-        let refcell= Box::new(SOURCE.as_bytes());
-        let all_parsed = read_log(refcell.clone(), ReadMode::All, vec![]);
+        let refcell = SOURCE.as_bytes();
+        let all_parsed = read_log(refcell, ReadMode::All, vec![]);
         println!("all parsed:");
-        all_parsed.iter().for_each(|parsed| println!("  {:?}", parsed));
+        all_parsed
+            .iter()
+            .for_each(|parsed| println!("  {:?}", parsed));
         // 2 для начала и конца строки (чтобы первая и последняя кавычки на отдельных строках были)
         // второе число - число пустых строк, которые оставлены для удобства чтения
-        assert_eq!(all_parsed.len(), SOURCE.lines().count()-2-7);
+        assert_eq!(all_parsed.len(), SOURCE.lines().count() - 2 - 7);
     }
 }

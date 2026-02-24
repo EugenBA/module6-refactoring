@@ -53,17 +53,21 @@ use analysis::parse::Announcements;
 fn main() {
     println!("Placeholder для экспериментов с cli");
 
-    let parsing_demo = r#"[UserBackets{"user_id":"Bob","backets":[Backet{"asset_id":"milk","count":3,},],},]"#;
+    let parsing_demo =
+        r#"[UserBackets{"user_id":"Bob","backets":[Backet{"asset_id":"milk","count":3,},],},]"#;
     let announcements = analysis::parse::just_parse::<Announcements>(parsing_demo).unwrap();
     println!("demo-parsed: {:?}", announcements);
 
     let args = std::env::args().collect::<Vec<_>>();
     let filename = args[1].clone();
-    println!("Trying opening file '{}' from directory '{}'", filename, std::env::current_dir().unwrap().to_string_lossy());
-    let file= Box::new(std::fs::File::open(filename).unwrap());
+    println!(
+        "Trying opening file '{}' from directory '{}'",
+        filename,
+        std::env::current_dir().unwrap().to_string_lossy()
+    );
+    let file = Box::new(std::fs::File::open(filename).unwrap());
 
     let logs = analysis::read_log(file, analysis::ReadMode::All, vec![]);
     println!("got logs:");
     logs.iter().for_each(|parsed| println!("  {:?}", parsed));
 }
-
