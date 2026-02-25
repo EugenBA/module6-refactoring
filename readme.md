@@ -141,6 +141,15 @@ let mode_matches = match mode {
                 ),
             };
 ```
+### 12 Логические ошибки
+Найдена логическая ошибка
+```rust
+map(
+    preceded(strip_whitespace(tag("WithdrawCash")), UserCash::parser()),
+    |user_cash| AppLogJournalKind::DepositCash(user_cash) // 
+),
+```
+Исправлено на WithdrawCash
 
 ## 3. Тесты
 Тесты проходят успешно
